@@ -1,5 +1,9 @@
 package com.example.immersiveciv;
 
+
+import com.example.immersiveciv.network.ModMessages;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import com.google.gson.JsonParser;
 import com.example.immersiveciv.command.CivResultCommand;
 import com.example.immersiveciv.command.ScanCommand;
 import com.example.immersiveciv.network.MiddlewareClient;
@@ -37,6 +41,14 @@ public class Immerviseciv implements ModInitializer {
             MiddlewareClient.getInstance().shutdown();
         });
 
+        ServerPlayNetworking.registerGlobalReceiver(ModMessages.RENDER_RESULT, (server, player, handler, buf, responseSender) -> {
+            // Получили готовые картинки от клиента
+            String jsonPayload = buf.readUtf(1024 * 1024 * 10); // Читаем до 10 МБ (Base64 весит много)
+            server.execute(() -> {
+                // Отправляем в Python Middleware
+                MiddlewareClient.getInstance().sendJson(JsonParser.parseString(jsonPayload).getAsJsonObject());
+            });
+        });
         LOGGER.info("[ImmersiveCiv] Мод инициализирован.");
     }
 }

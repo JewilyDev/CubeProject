@@ -1,13 +1,40 @@
 """
 MessageHandler — диспетчер входящих сообщений от Minecraft.
 Новые типы сообщений добавляются через декоратор @handler("type").
+
+Изменение архитектуры (пайплайн S2C → Render → C2S):
+  Ранее: scan_result содержал список блоков → Middleware рендерил через Pillow
+  Теперь: scan_result содержит готовые PNG-изображения от Java-клиента
+          (image_top_down, image_iso_ne, image_iso_sw в base64)
 """
 
+import base64
 import json
 import logging
+import os
+import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("immersiveciv.handler")
+
+
+def _save_debug_images(top: str, ne: str, sw: str, label: str) -> None:
+    """Сохраняет PNG на диск если задан RENDER_DEBUG_DIR. Для отладки рендеров."""
+    debug_dir = os.getenv("RENDER_DEBUG_DIR")
+    if not debug_dir or not (top and ne and sw):
+        return
+    try:
+        out = Path(debug_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time())
+        safe_label = label.replace("/", "_")[:32]
+        for name, data in [("top_down", top), ("iso_ne", ne), ("iso_sw", sw)]:
+            (out / f"{stamp}_{safe_label}_{name}.png").write_bytes(base64.b64decode(data))
+        logger.info("DEBUG: рендеры сохранены в %s (%d_*.png)", debug_dir, stamp)
+    except Exception as e:
+        logger.warning("DEBUG: не удалось сохранить рендеры: %s", e)
+
 
 # Реестр обработчиков: тип сообщения → coroutine
 _HANDLERS: dict[str, Callable[[str, dict], Awaitable[None]]] = {}
@@ -45,14 +72,23 @@ async def dispatch(connection_id: str, raw: str) -> None:
 
 @handler("scan_result")
 async def handle_scan_result(connection_id: str, data: dict) -> None:
+    """
+    Обрабатывает scan_result от сервера.
+
+    Ожидаемые поля:
+      label          — JSON-строка с метаданными от KubeJS (building_type, player, tech_checks…)
+      image_top_down — PNG вид сверху    (base64, от Java-клиента)
+      image_iso_ne   — PNG изометрия NE  (base64, от Java-клиента)
+      image_iso_sw   — PNG изометрия SW  (base64, от Java-клиента)
+    """
     from .aggregator import aggregate
     from .connection_manager import manager
     from .vlm.client import evaluate_building
 
-    label_raw = data.get("label", "unnamed")
-    blocks    = data.get("blocks", [])
-    center    = data.get("center", {})
-    radius    = data.get("radius", 0)
+    label_raw      = data.get("label", "unnamed")
+    image_top_down = data.get("image_top_down", "")
+    image_iso_ne   = data.get("image_iso_ne",   "")
+    image_iso_sw   = data.get("image_iso_sw",   "")
 
     # Пробуем распарсить label как JSON-метаданные от KubeJS validate_trigger
     try:
@@ -65,13 +101,20 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
     except (json.JSONDecodeError, TypeError):
         is_validate   = False
         building_type = label_raw
-        player        = "unknown"
+        player        = data.get("player", "unknown")
         tech_passed   = None
         tech_checks_raw = []
 
+    has_images = bool(image_top_down and image_iso_ne and image_iso_sw)
+
+    # ── DEBUG: сохраняем PNG на диск, если задан RENDER_DEBUG_DIR ─────────────
+    # Запусти middleware с RENDER_DEBUG_DIR=./render_debug чтобы видеть рендеры
+    _save_debug_images(image_top_down, image_iso_ne, image_iso_sw, building_type)
+    # ── END DEBUG ─────────────────────────────────────────────────────────────
+
     logger.info(
-        "[%s] scan_result: тип='%s', игрок='%s', центр=%s, радиус=%d, блоков=%d, tech_passed=%s",
-        connection_id, building_type, player, center, radius, len(blocks), tech_passed,
+        "[%s] scan_result: тип='%s', игрок='%s', has_images=%s, tech_passed=%s",
+        connection_id, building_type, player, has_images, tech_passed,
     )
 
     # ── Обычный /scan без валидации ──────────────────────────────────────────
@@ -79,7 +122,6 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
         await manager.send_to(connection_id, {
             "type": "scan_ack",
             "label": label_raw,
-            "block_count": len(blocks),
             "status": "received",
         })
         return
@@ -111,8 +153,13 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
         ),
     })
 
-    # ── VLM ──────────────────────────────────────────────────────────────────
-    vlm = await evaluate_building(building_type, blocks)
+    # ── VLM — передаём готовые изображения напрямую ──────────────────────────
+    images = {
+        "top_down": image_top_down,
+        "iso_ne":   image_iso_ne,
+        "iso_sw":   image_iso_sw,
+    }
+    vlm = await evaluate_building(building_type, images)
 
     # ── Агрегатор собирает итоговый отчёт ────────────────────────────────────
     report = aggregate(

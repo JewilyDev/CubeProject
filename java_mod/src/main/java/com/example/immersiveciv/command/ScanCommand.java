@@ -1,19 +1,24 @@
 package com.example.immersiveciv.command;
 
 import com.example.immersiveciv.Immerviseciv;
-import com.example.immersiveciv.network.MiddlewareClient;
+import com.example.immersiveciv.network.ModMessages;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.material.MapColor;
@@ -51,27 +56,36 @@ public class ScanCommand {
         BlockPos center = BlockPos.containing(src.getPosition());
 
         src.sendSuccess(() -> Component.literal(
-                "[ImmersiveCiv] Сканирование региона " + radius + " блоков вокруг " + center + "…"), false);
+                "[ImmersiveCiv] Сканирование региона и подготовка к рендеру…"), false);
 
-        // Запускаем сканирование в отдельном потоке, чтобы не блокировать игровой тик
         Thread scanThread = new Thread(() -> {
             try {
                 JsonObject payload = buildPayload(level, center, radius, label);
-                MiddlewareClient.getInstance().sendJson(payload);
 
-                Immerviseciv.LOGGER.info("[ImmersiveCiv] Скан отправлен: {} блоков, метка '{}'",
-                        payload.getAsJsonArray("blocks").size(), label);
+                // Достаем имя игрока из label (передано из KubeJS)
+                String playerName = "unknown";
+                try {
+                    JsonObject meta = JsonParser.parseString(label).getAsJsonObject();
+                    if (meta.has("player")) playerName = meta.get("player").getAsString();
+                } catch (Exception ignored) {}
 
-                // Уведомляем игрока об успехе через серверный поток
-                level.getServer().execute(() ->
-                    src.sendSuccess(() -> Component.literal(
-                            "[ImmersiveCiv] Скан завершён: " +
-                            payload.getAsJsonArray("blocks").size() + " блоков отправлено."), false));
+                // Ищем игрока и отправляем ему пакет S2C для рендера
+                ServerPlayer targetPlayer = level.getServer().getPlayerList().getPlayerByName(playerName);
+                if (targetPlayer == null && src.getPlayer() != null) {
+                    targetPlayer = src.getPlayer(); // Fallback на того, кто ввел команду
+                }
+
+                if (targetPlayer != null) {
+                    FriendlyByteBuf buf = PacketByteBufs.create();
+                    // Максимальный размер пакета - используем writeUtf
+                    buf.writeUtf(payload.toString(), 1024 * 1024 * 5);
+                    ServerPlayNetworking.send(targetPlayer, ModMessages.REQUEST_RENDER, buf);
+                } else {
+                    Immerviseciv.LOGGER.error("[ImmersiveCiv] Игрок для рендера не найден!");
+                }
 
             } catch (Exception e) {
                 Immerviseciv.LOGGER.error("[ImmersiveCiv] Ошибка сканирования: {}", e.getMessage());
-                level.getServer().execute(() ->
-                    src.sendFailure(Component.literal("[ImmersiveCiv] Ошибка: " + e.getMessage())));
             }
         }, "immersiveciv-scan");
         scanThread.setDaemon(true);

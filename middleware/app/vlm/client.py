@@ -1,11 +1,11 @@
 """
 VLM-клиент для оценки зданий через GPT-4o.
 
-Поток:
-  1. blocks → renderer.render_blocks() → PNG base64
-  2. PNG + промпт → GPT-4o vision
+Поток (новый — рендер на клиенте Minecraft):
+  1. Java-клиент рендерит 3 PNG вида → отправляет на сервер → Middleware получает base64
+  2. base64-строки + промпт → GPT-4o vision (3 image_url в одном запросе)
   3. Ответ GPT-4o → парсинг JSON (structured output)
-  4. Результат кешируется по SHA-256 хешу блок-дампа
+  4. Результат кешируется по SHA-256 хешу изображений
 
 Конфигурация через переменные окружения:
   OPENAI_API_KEY  — обязательно
@@ -13,6 +13,7 @@ VLM-клиент для оценки зданий через GPT-4o.
   VLM_PASS_SCORE  — минимальный балл для прохождения (по умолчанию 60)
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -22,11 +23,10 @@ from typing import Optional
 import httpx
 
 from .prompts import get_prompt
-from .renderer import blocks_to_hash, png_to_base64, render_all_views
 
 logger = logging.getLogger("immersiveciv.vlm")
 
-OPENAI_API_URL = "https://openrouter.ai/api/v1"
+OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://openrouter.ai/api/v1") + "/chat/completions"
 VLM_MODEL      = os.getenv("VLM_MODEL", "gpt-4o")
 VLM_PASS_SCORE = int(os.getenv("VLM_PASS_SCORE", "60"))
 
@@ -48,8 +48,18 @@ class VLMResult:
 _cache: dict[str, VLMResult] = {}
 
 
-def _cache_key(building_type: str, block_hash: str) -> str:
-    return f"{building_type}:{block_hash}"
+def _images_hash(images: dict[str, str]) -> str:
+    """SHA-256 по конкатенации трёх base64-строк."""
+    combined = (
+        images.get("top_down", "")
+        + images.get("iso_ne", "")
+        + images.get("iso_sw", "")
+    )
+    return hashlib.sha256(combined.encode()).hexdigest()
+
+
+def _cache_key(building_type: str, images: dict[str, str]) -> str:
+    return f"{building_type}:{_images_hash(images)}"
 
 
 # ── Парсинг ответа ────────────────────────────────────────────────────────────
@@ -89,11 +99,20 @@ def _parse_response(raw: str) -> VLMResult:
 
 async def evaluate_building(
     building_type: str,
-    blocks: list[dict],
+    images: dict[str, str],
 ) -> VLMResult:
     """
     Основная точка входа.
-    Принимает тип здания и список блоков, возвращает VLMResult.
+
+    Args:
+        building_type: тип здания (например, "farm", "watchtower")
+        images: словарь с тремя base64 PNG:
+                  "top_down" — вид сверху
+                  "iso_ne"   — изометрия с северо-востока
+                  "iso_sw"   — изометрия с юго-запада
+
+    Returns:
+        VLMResult с оценкой и комментариями.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -104,37 +123,49 @@ async def evaluate_building(
             improvements=[], error="no_api_key",
         )
 
-    block_hash = blocks_to_hash(blocks)
-    key = _cache_key(building_type, block_hash)
+    # Проверяем наличие изображений
+    missing = [k for k in ("top_down", "iso_ne", "iso_sw") if not images.get(k)]
+    if missing:
+        logger.error("VLM: отсутствуют изображения: %s", missing)
+        return VLMResult(
+            score=0, passed=False, style_rating="poor",
+            comments=f"Не хватает изображений: {missing}.",
+            improvements=[], error="missing_images",
+        )
+
+    key = _cache_key(building_type, images)
 
     # Проверяем кеш
     if key in _cache:
         cached = _cache[key]
-        logger.info("VLM cache hit: %s (score=%d)", key, cached.score)
+        logger.info("VLM cache hit: %s (score=%d)", key[:32], cached.score)
         return VLMResult(
             score=cached.score, passed=cached.passed,
             style_rating=cached.style_rating, comments=cached.comments,
             improvements=cached.improvements, cached=True,
         )
 
-    # Рендерим три вида: top-down, iso NE, iso SW
-    logger.info("VLM: рендеринг %d блоков для «%s»…", len(blocks), building_type)
-    png_views = render_all_views(blocks)
-
+    # Строим image_content из готовых base64 — три вида от Java-клиента
+    logger.info("VLM: отправляем 3 вида постройки «%s» в %s…", building_type, VLM_MODEL)
+    view_labels = [
+        ("top_down", "top-down plan view"),
+        ("iso_ne",   "isometric north-east view"),
+        ("iso_sw",   "isometric south-west view"),
+    ]
     image_content = [
         {
             "type": "image_url",
             "image_url": {
-                "url": f"data:image/png;base64,{png_to_base64(png)}",
+                "url": f"data:image/png;base64,{images[key_name]}",
                 "detail": "high",
             },
         }
-        for png in png_views
+        for key_name, _ in view_labels
     ]
 
     system_prompt, user_prompt = get_prompt(building_type)
     view_note = (
-        "\n\nThree views are provided: "
+        "\n\nThree views are provided (rendered directly by Minecraft client): "
         "(1) top-down plan, (2) isometric north-east, (3) isometric south-west."
     )
 
@@ -150,7 +181,6 @@ async def evaluate_building(
         ],
     }
 
-    logger.info("VLM: отправляем запрос к %s…", VLM_MODEL)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(New-Item -Path \"C:\\\\Users\\\\jwly_\\\\Desktop\\\\ClaudeProject\\\\java_mod\\\\src\\\\main\\\\java\\\\com\\\\example\\\\immersiveciv\\\\network\\\\ModMessages.java\" -ItemType File -Force)",
+      "Bash(Out-Null)"
+    ]
+  }
+}
