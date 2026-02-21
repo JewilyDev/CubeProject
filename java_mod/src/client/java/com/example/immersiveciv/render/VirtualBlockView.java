@@ -1,9 +1,11 @@
 package com.example.immersiveciv.render;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -52,10 +54,18 @@ public class VirtualBlockView implements BlockAndTintGetter {
     public float getShade(Direction direction, boolean shaded) { return 1.0f; }
 
     @Override
-    public LevelLightEngine getLightEngine() { return null; }
-
-    @Override
     public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
         return 0xFFFFFF; // Дефолтный белый цвет (для листвы и травы в GUI)
+    }
+    @Override
+    public int getBrightness(LightLayer lightLayer, BlockPos blockPos) {
+        return 15; // Максимальная яркость для всех блоков
+    }
+
+    @Override
+    public LevelLightEngine getLightEngine() {
+        // Fallback — берём из реального уровня чтобы не было NPE
+        assert Minecraft.getInstance().level != null;
+        return Minecraft.getInstance().level.getLightEngine();
     }
 }

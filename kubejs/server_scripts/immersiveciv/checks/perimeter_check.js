@@ -61,13 +61,14 @@ function checkPerimeter(blocks, cx, cy, cz, radius) {
     let reachedCenter = false
 
     while (queue.length > 0) {
-        const [x, z] = queue.shift()
-        if (`${x},${wallY},${z}` === centerKey) {
+        const cell = queue.shift()
+        const qx = cell[0], qz = cell[1]
+        if (`${qx},${wallY},${qz}` === centerKey) {
             reachedCenter = true
             break
         }
-        for (const [dx, dz] of dirs) {
-            const nx = x + dx, nz = z + dz
+        for (let di = 0; di < dirs.length; di++) {
+            const nx = qx + dirs[di][0], nz = qz + dirs[di][1]
             if (nx < minX || nx > maxX || nz < minZ || nz > maxZ) continue
             tryEnqueue(nx, nz)
         }

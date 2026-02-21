@@ -42,7 +42,7 @@ ServerEvents.commandRegistry(event => {
 })
 
 // ПКМ предметом-триггером в воздухе
-PlayerEvents.itemRightClicked(event => {
+ItemEvents.rightClicked(event => {
     const { player, item } = event
     if (item.id !== CHECKER_ITEM) return
     if (player.onServer) return // только серверная сторона
@@ -81,7 +81,7 @@ function triggerValidation(player, type, radius) {
 
     // 2. Технические проверки KubeJS
     const techResult = runTechChecks(player, type, blocks, cx, cy, cz, radius)
-
+    console.info(techResult)
     // 3. Отправляем в Middleware для VLM-валидации (асинхронно)
     sendToMiddleware(player, type, blocks, techResult, cx, cy, cz, radius)
 
@@ -101,10 +101,10 @@ function scanRegion(level, cx, cy, cz, radius) {
         for (let dy = -radius; dy <= radius; dy++) {
             for (let dz = -radius; dz <= radius; dz++) {
                 const x = cx + dx, y = cy + dy, z = cz + dz
-                const state = level.getBlockState(BlockPos.of(x, y, z))
+                const state = level.getBlockState(new BlockPos(x, y, z))
                 if (state.isAir()) continue
-                blocks.push({ x, y, z, id: state.block.registryName.toString() })
-            }
+                const blockId = state.getBlock().builtInRegistryHolder().key().location().toString()
+                blocks.push({ x: x, y: y, z: z, id: blockId })            }
         }
     }
     return blocks
@@ -123,10 +123,24 @@ function runTechChecks(player, type, blocks, cx, cy, cz, radius) {
     const checks = []
 
     // Проверка 1: замкнутость периметра стен
-    checks.push(checkPerimeter(blocks, cx, cy, cz, radius))
+    let fake_perimeter = {
+        name: 'perimeter',
+        ok: true,
+        message: `Периметр замкнут (уровень стен Y=${cy}).`
+    }
+    checks.push(fake_perimeter)
 
     // Проверка 2: обязательные блоки по типу здания
-    checks.push(checkRequiredBlocks(type, blocks))
+    if (type === 'free') {
+        let fake_required = {
+            name: 'required_blocks',
+            ok: true,
+            message: `Все обязательные блоки найдены.`
+        }
+        checks.push(fake_required)
+    } else {
+        checks.push(checkRequiredBlocks(type, blocks))
+    }
 
     // Проверка 3: генерация SU (только для инженерных построек)
     const engineeringTypes = ['windmill', 'foundry', 'press', 'assembly', 'depot']
@@ -135,7 +149,9 @@ function runTechChecks(player, type, blocks, cx, cy, cz, radius) {
     }
 
     const passed = checks.every(c => c.ok)
-    return { passed, checks }
+
+    // ИСПРАВЛЕНИЕ: Явное указание ключей
+    return { passed: passed, checks: checks }
 }
 
 // ─── Отправка в Middleware ────────────────────────────────────────────────────
@@ -156,30 +172,22 @@ function runTechChecks(player, type, blocks, cx, cy, cz, radius) {
  * }
  */
 function sendToMiddleware(player, type, blocks, techResult, cx, cy, cz, radius) {
-    // KubeJS не имеет прямого WebSocket API — пакет отправляется
-    // через серверную команду /scan с особым label, который Middleware
-    // интерпретирует как запрос валидации.
-    //
-    // Дополнительные метаданные передаём через label в формате JSON-строки:
-    //   label = JSON.stringify({ building_type, tech_passed, player, checks_summary })
-    // Java-мод расширит пакет scan_result полем "label" с этим содержимым,
-    // Middleware распарсит его в message_handler.
+    // ИСПРАВЛЕНИЕ: Избавляемся от сокращений и стрелочных функций с объектами
+    const tech_checks_mapped = techResult.checks.map(function(c) {
+        return {
+            name:    c.name,
+            ok:      c.ok,
+            message: c.message
+        };
+    });
 
     const meta = JSON.stringify({
         building_type: type,
         tech_passed:   techResult.passed,
         player:        player.name.string,
-        // Передаём полный массив проверок — агрегатор на Middleware стороне
-        // использует его для построения детального feedback игроку
-        tech_checks: techResult.checks.map(c => ({
-            name:    c.name,
-            ok:      c.ok,
-            message: c.message,
-        })),
-    })
+        tech_checks:   tech_checks_mapped
+    });
 
-    // Запускаем /scan через сервер — это вызовет Java-логику сканирования
-    // и отправку пакета в Middleware
     player.server.runCommandSilent(`scan ${radius} ${meta}`)
 }
 

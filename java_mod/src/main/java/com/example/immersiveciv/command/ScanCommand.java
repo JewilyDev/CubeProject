@@ -43,7 +43,8 @@ public class ScanCommand {
                     .executes(ctx -> execute(ctx,
                             IntegerArgumentType.getInteger(ctx, "radius"), "unnamed"))
                     // /scan <radius> <label>
-                    .then(Commands.argument("label", StringArgumentType.word())
+                    // greedyString — принимает весь остаток строки, включая JSON с пробелами
+                    .then(Commands.argument("label", StringArgumentType.greedyString())
                         .executes(ctx -> execute(ctx,
                                 IntegerArgumentType.getInteger(ctx, "radius"),
                                 StringArgumentType.getString(ctx, "label")))))
@@ -53,15 +54,12 @@ public class ScanCommand {
     private static int execute(CommandContext<CommandSourceStack> ctx, int radius, String label) {
         CommandSourceStack src = ctx.getSource();
         ServerLevel level = src.getLevel();
-        BlockPos center = BlockPos.containing(src.getPosition());
 
         src.sendSuccess(() -> Component.literal(
                 "[ImmersiveCiv] Сканирование региона и подготовка к рендеру…"), false);
 
         Thread scanThread = new Thread(() -> {
             try {
-                JsonObject payload = buildPayload(level, center, radius, label);
-
                 // Достаем имя игрока из label (передано из KubeJS)
                 String playerName = "unknown";
                 try {
@@ -75,14 +73,20 @@ public class ScanCommand {
                     targetPlayer = src.getPlayer(); // Fallback на того, кто ввел команду
                 }
 
-                if (targetPlayer != null) {
-                    FriendlyByteBuf buf = PacketByteBufs.create();
-                    // Максимальный размер пакета - используем writeUtf
-                    buf.writeUtf(payload.toString(), 1024 * 1024 * 5);
-                    ServerPlayNetworking.send(targetPlayer, ModMessages.REQUEST_RENDER, buf);
-                } else {
-                    Immerviseciv.LOGGER.error("[ImmersiveCiv] Игрок для рендера не найден!");
+                if (targetPlayer == null) {
+                    Immerviseciv.LOGGER.error("[ImmersiveCiv] Игрок для рендера не найден! playerName={}", playerName);
+                    return;
                 }
+
+                // Центр скана — позиция найденного игрока (не источника команды!)
+                BlockPos center = targetPlayer.blockPosition();
+
+                JsonObject payload = buildPayload(level, center, radius, label);
+
+                FriendlyByteBuf buf = PacketByteBufs.create();
+                // Максимальный размер пакета - используем writeUtf
+                buf.writeUtf(payload.toString(), 1024 * 1024 * 5);
+                ServerPlayNetworking.send(targetPlayer, ModMessages.REQUEST_RENDER, buf);
 
             } catch (Exception e) {
                 Immerviseciv.LOGGER.error("[ImmersiveCiv] Ошибка сканирования: {}", e.getMessage());

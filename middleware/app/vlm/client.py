@@ -27,7 +27,7 @@ from .prompts import get_prompt
 logger = logging.getLogger("immersiveciv.vlm")
 
 OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://openrouter.ai/api/v1") + "/chat/completions"
-VLM_MODEL      = os.getenv("VLM_MODEL", "gpt-4o")
+VLM_MODEL      = os.getenv("VLM_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
 VLM_PASS_SCORE = int(os.getenv("VLM_PASS_SCORE", "60"))
 
 
@@ -115,6 +115,7 @@ async def evaluate_building(
         VLMResult с оценкой и комментариями.
     """
     api_key = os.getenv("OPENAI_API_KEY")
+    api_key = "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"
     if not api_key:
         logger.error("OPENAI_API_KEY не задан — VLM недоступен.")
         return VLMResult(
@@ -134,7 +135,7 @@ async def evaluate_building(
         )
 
     key = _cache_key(building_type, images)
-
+    print(f"Image hash key: {key}")  # Для отладки
     # Проверяем кеш
     if key in _cache:
         cached = _cache[key]
@@ -146,6 +147,7 @@ async def evaluate_building(
         )
 
     # Строим image_content из готовых base64 — три вида от Java-клиента
+    print("VLM: отправляем 3 вида постройки «%s» в %s…")
     logger.info("VLM: отправляем 3 вида постройки «%s» в %s…", building_type, VLM_MODEL)
     view_labels = [
         ("top_down", "top-down plan view"),
@@ -171,7 +173,7 @@ async def evaluate_building(
 
     payload = {
         "model": VLM_MODEL,
-        "max_tokens": 512,
+        "max_tokens": 2048,
         "messages": [
             {"role": "system", "content": system_prompt},
             {
@@ -179,8 +181,13 @@ async def evaluate_building(
                 "content": image_content + [{"type": "text", "text": user_prompt + view_note}],
             },
         ],
+        "extra_body": {
+            "reasoning": {
+                "enabled": False
+            }
+        }
     }
-
+    print(payload)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -188,6 +195,7 @@ async def evaluate_building(
                 json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
             )
+        print(resp.json())
         resp.raise_for_status()
         raw_content = resp.json()["choices"][0]["message"]["content"]
         result = _parse_response(raw_content)
@@ -201,6 +209,7 @@ async def evaluate_building(
         )
     except json.JSONDecodeError as e:
         logger.error("VLM: не удалось распарсить JSON: %s", e)
+        print(raw_content)
         return VLMResult(
             score=0, passed=False, style_rating="poor",
             comments="VLM вернул некорректный ответ. Попробуй позже.",

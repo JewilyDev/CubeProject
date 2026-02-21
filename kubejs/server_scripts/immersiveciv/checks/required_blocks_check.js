@@ -147,6 +147,7 @@ const BUILDING_REQUIREMENTS = {
  */
 function checkRequiredBlocks(type, blocks) {
     const requirements = BUILDING_REQUIREMENTS[type]
+    console.info(blocks)
     if (!requirements) {
         return {
             name: 'required_blocks',

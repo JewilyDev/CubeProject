@@ -176,4 +176,8 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
         report.overall_passed, report.tech_passed, report.vlm_score,
     )
 
-    await manager.send_to(connection_id, report.to_dict())
+    # ГАРАНТИРУЕМ НАЛИЧИЕ ПОЛЯ TYPE ДЛЯ JAVA!
+    report_data = report.to_dict()
+    report_data["type"] = "validate_result" 
+    
+    await manager.send_to(connection_id, report_data)
