@@ -25,7 +25,10 @@ public class ClientNetworking {
     public static void handleRenderRequest(String jsonStr) {
         JsonObject payload = JsonParser.parseString(jsonStr).getAsJsonObject();
         JsonArray blocksArr = payload.getAsJsonArray("blocks");
-        int radius = payload.get("radius").getAsInt();
+        int radius = 10; // Значение по умолчанию
+        if (payload.has("radius")) {
+            radius = payload.get("radius").getAsInt();
+        }
 
         Map<BlockPos, BlockState> blocks = new HashMap<>();
         Map<BlockPos, BlockEntity> blockEntities = new HashMap<>();

@@ -1,8 +1,13 @@
 package com.example.immersiveciv.network;
 
 import com.example.immersiveciv.Immerviseciv;
+import com.example.immersiveciv.registry.BuildingRecord;
+import com.example.immersiveciv.registry.BuildingRegistry;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -144,19 +149,38 @@ public class MiddlewareClient extends WebSocketClient {
 
     /**
      * Финальный результат — передаём в KubeJS через /civresult.
-     * Весь payload JSON экранируем как один greedyString-аргумент.
+     * Если overall_passed=true — регистрируем здание в BuildingRegistry и рассылаем S2C.
      */
     private void handleResult(MinecraftServer server, JsonObject json, String raw) {
         String cmd = "civresult " + raw;
 
         server.execute(() -> {
+            // 1. Передаём в KubeJS для наград/сообщений
             int success = server.getCommands().performPrefixedCommand(
                     server.createCommandSourceStack().withMaximumPermission(2),
                     cmd
             );
-
             if (success == 0) {
                 Immerviseciv.LOGGER.error("[ImmersiveCiv] Ошибка выполнения /civresult! Проверьте логи KubeJS.");
+            }
+
+            // 2. Регистрируем здание если прошло валидацию
+            boolean passed = json.has("overall_passed") && json.get("overall_passed").getAsBoolean();
+            if (!passed) return;
+
+            BuildingRecord record = BuildingRecord.fromValidateResult(json);
+            BuildingRegistry registry = BuildingRegistry.get(server);
+            registry.register(record);
+
+            Immerviseciv.LOGGER.info("[ImmersiveCiv] Здание зарегистрировано: {} id={} owner={}",
+                    record.type, record.id, record.owner);
+
+            // 3. Broadcast BUILDING_REGISTERED всем онлайн-игрокам
+            String encoded = record.toNbt().toString(); // безопасная строка для сети
+            for (ServerPlayer online : server.getPlayerList().getPlayers()) {
+                FriendlyByteBuf buf = PacketByteBufs.create();
+                record.encode(buf);
+                ServerPlayNetworking.send(online, ModMessages.BUILDING_REGISTERED, buf);
             }
         });
     }

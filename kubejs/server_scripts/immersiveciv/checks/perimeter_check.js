@@ -22,8 +22,8 @@ function checkPerimeter(blocks, cx, cy, cz, radius) {
     for (const b of blocks) {
         layerCount[b.y] = (layerCount[b.y] || 0) + 1
     }
-    const floorY = Object.entries(layerCount)
-        .sort((a, b) => b[1] - a[1])[0]?.[0]
+    const sortedLayers = Object.entries(layerCount).sort((a, b) => b[1] - a[1]);
+    const floorY = sortedLayers.length > 0 ? sortedLayers[0][0] : undefined;
     if (floorY === undefined) {
         return { name: 'perimeter', ok: false, message: 'Не найдено ни одного блока для определения пола.' }
     }
@@ -61,14 +61,14 @@ function checkPerimeter(blocks, cx, cy, cz, radius) {
     let reachedCenter = false
 
     while (queue.length > 0) {
-        const cell = queue.shift()
-        const qx = cell[0], qz = cell[1]
+        let cell_ = queue.shift()
+        let qx = cell_[0], qz = cell_[1]
         if (`${qx},${wallY},${qz}` === centerKey) {
             reachedCenter = true
             break
         }
         for (let di = 0; di < dirs.length; di++) {
-            const nx = qx + dirs[di][0], nz = qz + dirs[di][1]
+            let nx = qx + dirs[di][0], nz = qz + dirs[di][1]
             if (nx < minX || nx > maxX || nz < minZ || nz > maxZ) continue
             tryEnqueue(nx, nz)
         }

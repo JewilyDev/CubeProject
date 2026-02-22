@@ -1,10 +1,5 @@
-// ImmersiveCiv — Фаза 1.4: Обработка validate_result от Middleware
-// Middleware отправляет validate_result обратно через WebSocket.
-// Java-мод получает пакет и выполняет серверную команду /civresult <json>
-// (см. ResultCommand.java), которую перехватывает этот скрипт.
-
-// ─── Команда /freebuild ───────────────────────────────────────────────────────
-// Триггер свободной постройки: не требует типа, отправляет building_type="free"
+/// Подключаем нативный Java-класс для "жадной" строки
+const StringArgumentType = Java.loadClass('com.mojang.brigadier.arguments.StringArgumentType')
 
 ServerEvents.commandRegistry(event => {
     const { commands: Commands, arguments: Arguments } = event
@@ -27,32 +22,23 @@ ServerEvents.commandRegistry(event => {
             )
     )
 
-    // /civresult <json> — внутренняя команда, вызывается Java-модом при получении
-    // пакета validate_result от Middleware. Игроки не используют её напрямую.
+    // /civresult <json>
     event.register(
         Commands.literal('civresult')
             .requires(src => src.hasPermission(2))  // только сервер
             .then(
-                Commands.argument('payload', Arguments.STRING.create(event))
+                // ИСПОЛЬЗУЕМ GREEDY STRING
+                Commands.argument('payload', StringArgumentType.greedyString())
                     .executes(ctx => {
-                        const raw = Arguments.STRING.getResult(ctx, 'payload')
-                        handleValidateResult(ctx.source.server, raw)
+                        const raw = StringArgumentType.getString(ctx, 'payload')
+                        handleValidateResult(raw)
                         return 1
                     })
             )
     )
 })
 
-// ─── Обработчик результата от Middleware ──────────────────────────────────────
-
-/**
- * Разбирает JSON пакет validate_result и выводит детальный feedback
- * нужному игроку.
- *
- * @param {Internal.MinecraftServer} server
- * @param {string} raw - JSON строка ValidationReport
- */
-function handleValidateResult(server, raw) {
+function handleValidateResult(raw) {
     let report
     try {
         report = JSON.parse(raw)
@@ -62,31 +48,27 @@ function handleValidateResult(server, raw) {
     }
 
     const playerName = report.player
-    const player     = server.playerList.getPlayerByName(playerName)
+    // КРИТИЧНОЕ ИСПРАВЛЕНИЕ: получаем игрока через Utils KubeJS
+    const player = Utils.server.getPlayer(playerName) 
+    
     if (!player) {
-        // Игрок оффлайн — просто логируем
         console.log(`[ImmersiveCiv] validate_result для оффлайн-игрока: ${playerName}`)
         return
     }
 
-    // Выводим все строки feedback от агрегатора
     const lines = report.summary_lines || []
     for (const line of lines) {
         player.tell(line)
     }
 
-    // Если прогресс-бар уже в summary_lines — дополнительный вывод не нужен.
-    // Но если нет VLM (провал по техпроверкам) — краткий итог
     if (!report.overall_passed && lines.length === 0) {
         player.tell('§c[ImmersiveCiv] Здание не принято.')
     }
 
-    // При успехе — эффекты (звук, частицы)
     if (report.overall_passed) {
         grantBuildingSuccess(player, report)
     }
 
-    // Бонус за свободную постройку
     if (report.is_free_build && report.free_bonus) {
         grantFreeBonus(player, report)
     }

@@ -115,7 +115,6 @@ async def evaluate_building(
         VLMResult с оценкой и комментариями.
     """
     api_key = os.getenv("OPENAI_API_KEY")
-    api_key = "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"
     if not api_key:
         logger.error("OPENAI_API_KEY не задан — VLM недоступен.")
         return VLMResult(

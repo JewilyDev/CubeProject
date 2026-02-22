@@ -89,6 +89,9 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
     image_top_down = data.get("image_top_down", "")
     image_iso_ne   = data.get("image_iso_ne",   "")
     image_iso_sw   = data.get("image_iso_sw",   "")
+    # Координаты региона — добавлены в ScanCommand.buildPayload() для BuildingRegistry
+    pos1 = data.get("pos1")   # {"x": int, "y": int, "z": int} или None
+    pos2 = data.get("pos2")   # {"x": int, "y": int, "z": int} или None
 
     # Пробуем распарсить label как JSON-метаданные от KubeJS validate_trigger
     try:
@@ -178,6 +181,12 @@ async def handle_scan_result(connection_id: str, data: dict) -> None:
 
     # ГАРАНТИРУЕМ НАЛИЧИЕ ПОЛЯ TYPE ДЛЯ JAVA!
     report_data = report.to_dict()
-    report_data["type"] = "validate_result" 
-    
+    report_data["type"] = "validate_result"
+
+    # Прокидываем pos1/pos2 → Java BuildingRegistry их использует для сохранения зоны
+    if pos1 is not None:
+        report_data["pos1"] = pos1
+    if pos2 is not None:
+        report_data["pos2"] = pos2
+
     await manager.send_to(connection_id, report_data)
